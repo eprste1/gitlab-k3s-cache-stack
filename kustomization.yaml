@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - registry/registry.yaml
+  - registry/registry-mirror.yaml
+  - registry/registry-mirror-gcr.yaml
+  - registry/registry-mirror-ghcr.yaml
+  - registry/cleanup-cronjob.yaml
+  - minio/minio.yaml

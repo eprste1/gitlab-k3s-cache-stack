@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-mirror-ghcr-config
+  namespace: registry
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      fields:
+        service: registry
+    storage:
+      cache:
+        blobdescriptor: inmemory
+      filesystem:
+        rootdirectory: /var/lib/registry
+    http:
+      addr: :5000
+      headers:
+        X-Content-Type-Options: [nosniff]
+    proxy:
+      remoteurl: https://ghcr.io
+      ttl: 336h
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-mirror-ghcr-pvc
+  namespace: registry
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-mirror-ghcr
+  namespace: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-mirror-ghcr
+  template:
+    metadata:
+      labels:
+        app: registry-mirror-ghcr
+    spec:
+      containers:
+        - name: registry-mirror-ghcr
+          image: registry:2
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: config
+              mountPath: /etc/docker/registry
+            - name: data
+              mountPath: /var/lib/registry
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: config
+          configMap:
+            name: registry-mirror-ghcr-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry-mirror-ghcr-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-mirror-ghcr
+  namespace: registry
+spec:
+  selector:
+    app: registry-mirror-ghcr
+  ports:
+    - port: 5000
+      targetPort: 5000
