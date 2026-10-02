@@ -7,4 +7,4 @@ resources:
   - registry/registry-mirror-gcr.yaml
   - registry/registry-mirror-ghcr.yaml
   - registry/cleanup-cronjob.yaml
-  - minio/minio.yaml
+  - garage/garage.yaml

@@ -35,7 +35,7 @@ vulnerability DB on every run.
 │              containerd hosts.toml (cluster-wide)              │
 │                             │                                  │
 │  ┌──────────────┐          │           ┌──────────────┐       │
-│  │ registry     │◄─────────┘           │ minio        │       │
+│  │ registry     │◄─────────┘           │ garage       │       │
 │  │ (kaniko      │  kaniko --cache-repo  │ (S3 backend  │       │
 │  │  build cache)│                       │  for runner  │       │
 │  └──────────────┘                       │  cache)      │       │
@@ -62,9 +62,12 @@ Three independent pieces:
   `--cache-repo`. Cleaned up weekly by a `CronJob` that runs the registry's
   own `garbage-collect --delete-untagged=true` against the *live* pod via
   `kubectl exec` - no downtime, only removes genuinely orphaned blobs.
-- **MinIO** (`minio/minio.yaml`) - S3-compatible backend for GitLab Runner's
-  built-in [distributed cache](https://docs.gitlab.com/runner/configuration/autoscale/#distributed-runners-caching)
-  (dependencies, Trivy's vulnerability DB, etc).
+- **Garage** (`garage/garage.yaml`) - S3-compatible backend for GitLab
+  Runner's built-in [distributed cache](https://docs.gitlab.com/runner/configuration/autoscale/#distributed-runners-caching)
+  (dependencies, Trivy's vulnerability DB, etc). Single-node Rust object
+  store, chosen specifically for its tiny resource footprint - [Garage's own
+  docs](https://garagehq.deuxfleurs.fr/) cite it running comfortably on a
+  Raspberry Pi.
 
 ## Prerequisites
 
@@ -76,16 +79,18 @@ Three independent pieces:
 
 ## Setup
 
-### 1. Create the MinIO credentials secret
+### 1. Create the Garage config secret
 
-Not included in the manifests on purpose - don't commit real credentials,
-even weak ones, to a repo:
+Not included in the manifests on purpose - don't commit a real `rpc_secret`,
+even for a single-node setup, to a repo:
 
 ```bash
-kubectl create namespace minio
-kubectl create secret generic minio-secret -n minio \
-  --from-literal=rootUser=admin \
-  --from-literal=rootPassword="$(openssl rand -base64 24)"
+kubectl create namespace garage
+cp garage/garage.toml.template /tmp/garage.toml
+sed -i "s/REPLACE_WITH_OUTPUT_OF_openssl_rand_-hex_32/$(openssl rand -hex 32)/" /tmp/garage.toml
+kubectl create secret generic garage-config -n garage \
+  --from-file=garage.toml=/tmp/garage.toml
+rm /tmp/garage.toml
 ```
 
 ### 2. Apply the manifests
@@ -94,7 +99,7 @@ kubectl create secret generic minio-secret -n minio \
 kubectl apply -k .
 ```
 
-This creates the `registry` and `minio` namespaces and deploys everything.
+This creates the `registry` and `garage` namespaces and deploys everything.
 
 ### 3. Wire the pull-through mirrors into containerd
 
@@ -132,12 +137,24 @@ sudo find /var/lib/rancher/k3s/agent/etc/containerd/certs.d -type f -exec echo "
 You should see a `hosts.toml` per registry pointing at the mirror's
 ClusterIP with `capabilities = ["pull", "resolve"]`.
 
-### 4. Create the MinIO bucket GitLab Runner will use
+### 4. Bootstrap Garage: layout, bucket, and an access key
+
+Garage needs a one-time cluster layout assignment before it'll serve
+anything, even as a single node:
 
 ```bash
-kubectl exec -n minio deployment/minio -- \
-  sh -c 'mc alias set local http://localhost:9000 admin YOUR_PASSWORD 2>/dev/null; mc mb --ignore-existing local/gitlab-runner-cache'
+NODE_ID=$(kubectl exec -n garage deployment/garage -- /garage node id -q | cut -d'@' -f1)
+kubectl exec -n garage deployment/garage -- /garage layout assign -z local -c 15G "$NODE_ID"
+kubectl exec -n garage deployment/garage -- /garage layout apply --version 1
+
+kubectl exec -n garage deployment/garage -- /garage bucket create gitlab-runner-cache
+kubectl exec -n garage deployment/garage -- /garage key create gitlab-runner-key
+kubectl exec -n garage deployment/garage -- /garage bucket allow \
+  --read --write --owner --key gitlab-runner-key gitlab-runner-cache
 ```
+
+The `key create` output prints a Key ID and Secret key once - save them,
+you'll need both for the next step.
 
 ### 5. Point your GitLab Runner at the cache stack
 
@@ -155,9 +172,9 @@ every reinstall:
     Type = "s3"
     Shared = true
     [runners.cache.s3]
-      ServerAddress = "minio.minio.svc.cluster.local:9000"
-      AccessKey = "admin"
-      SecretKey = "YOUR_PASSWORD"
+      ServerAddress = "garage.garage.svc.cluster.local:3900"
+      AccessKey = "<Key ID from step 4>"
+      SecretKey = "<Secret key from step 4>"
       BucketName = "gitlab-runner-cache"
       Insecure = true
 ```
@@ -186,11 +203,14 @@ level.
 
 ## A couple of things that bit us
 
-- **`minio/minio` was pulled from Docker Hub entirely** in September 2026 -
-  MinIO Inc moved the community edition to source-only distribution and
-  archived the Docker Hub org. The image reference here points at
-  `quay.io/minio/minio` instead, which (for now) still serves the same
-  images.
+- **This used to run MinIO.** `minio/minio` was pulled from Docker Hub
+  entirely in September 2026 (MinIO Inc moved the community edition to
+  source-only distribution), and the `quay.io/minio/minio` fallback started
+  requiring auth for anonymous pulls just two weeks later. On top of that,
+  the last free community image carries an unpatched auth-bypass CVE that
+  MinIO has said will only ever be fixed in the paid product. Switched to
+  Garage instead - smaller footprint, Apache-friendlier ecosystem, and one
+  less dependency on a single vendor's goodwill.
 - **Don't use the old `mirrors:` block format in containerd's `config.toml`**
   if you're checking whether the mirror config took effect - modern
   containerd (and what K3s generates) uses per-registry `hosts.toml` files
