@@ -176,6 +176,7 @@ every reinstall:
       AccessKey = "<Key ID from step 4>"
       SecretKey = "<Secret key from step 4>"
       BucketName = "gitlab-runner-cache"
+      BucketLocation = "garage"
       Insecure = true
 ```
 
