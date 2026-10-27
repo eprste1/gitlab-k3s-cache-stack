@@ -218,6 +218,24 @@ level.
   containerd (and what K3s generates) uses per-registry `hosts.toml` files
   under `certs.d/`, not the legacy inline mirrors block. Looking in the
   wrong place makes it look like the mirror isn't working when it actually is.
+- **Cleanup of the pull-through mirrors is only partial by default.**
+  The `registry:2` image applies a fixed 168h TTL to cached objects and
+  ignores the `proxy.ttl` key, so the `ttl: 336h` lines in the mirror manifests
+  have no effect. On top of that, without `storage.delete.enabled: true` the
+  expiry scheduler cannot delete manifests and logs
+  `Scheduler error returned from OnExpire(...): operation unsupported`. Layers
+  are still removed; the leftover manifests and tags are harmless (missing
+  layers are fetched again on the next pull) but they are never cleaned up.
+  The manifests here keep delete disabled on purpose: enabling it lets any pod
+  that can reach the mirror delete images with a plain `DELETE /v2/...` request,
+  because the registry has no authentication. If you want the cleanup to be
+  complete and accept that, add this to the `config.yml` of each mirror:
+
+  ```yaml
+  storage:
+    delete:
+      enabled: true
+  ```
 
 ## License
 
