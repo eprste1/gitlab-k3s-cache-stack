@@ -29,7 +29,7 @@ vulnerability DB on every run.
 │  │ mirror       │   │ mirror-gcr   │   │ mirror-ghcr  │      │
 │  │ (docker.io)  │   │ (gcr.io)     │   │ (ghcr.io)    │      │
 │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘      │
-│         │ pull-through, proxy.ttl auto-eviction │             │
+│         │ pull-through, TTL auto-eviction      │             │
 │         └───────────────────┴───────────────────┘             │
 │                             │                                  │
 │              containerd hosts.toml (cluster-wide)              │
@@ -54,9 +54,10 @@ Three independent pieces:
   `registry:2` in [proxy mode](https://distribution.github.io/distribution/recipes/mirror/)
   for docker.io, gcr.io and ghcr.io. Each one is wired into containerd
   cluster-wide via K3s's `registries.yaml` mechanism, so **every pod** in
-  the cluster benefits automatically - not just CI jobs. They use `proxy.ttl`
-  so images nobody has pulled in a while get evicted on their own; anything
-  actively used stays cached indefinitely.
+  the cluster benefits automatically - not just CI jobs. The proxy expires
+  cached objects after a fixed 168h (the `registry:2` image ignores the
+  `proxy.ttl` key), so images nobody has pulled in a while get evicted on their
+  own; anything pulled regularly stays cached.
 - **Kaniko cache-repo** (`registry/registry.yaml`) - a second, non-proxy
   `registry:2` that kaniko pushes/pulls build layer cache to via
   `--cache-repo`. Cleaned up weekly by a `CronJob` that runs the registry's

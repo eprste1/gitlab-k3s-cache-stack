@@ -39,9 +39,9 @@ metadata:
 spec:
   # Every Sunday, 04:00
   # NOTE: only targets the kaniko cache-repo ("registry"). The three
-  # pull-through mirrors (docker.io/gcr.io/ghcr.io) self-clean via
-  # proxy.ttl in their config.yml, so unused images expire on their own
-  # while actively-pulled ones stay cached.
+  # pull-through mirrors (docker.io/gcr.io/ghcr.io) expire cached objects on
+  # their own (registry:2 applies a fixed 168h TTL and ignores the proxy.ttl
+  # key), so unused images disappear while actively-pulled ones stay cached.
   schedule: "0 4 * * 0"
   concurrencyPolicy: Forbid
   jobTemplate:
@@ -54,11 +54,17 @@ spec:
           restartPolicy: Never
           containers:
             - name: gc
-              image: bitnami/kubectl:1.31
-              command:
-                - /bin/bash
-                - -c
-                - |
-                  set -e
-                  echo "Running garbage-collect on kaniko cache-repo (removes only untagged/orphaned blobs)..."
-                  kubectl exec deployment/registry -n registry -- registry garbage-collect --delete-untagged=true /etc/docker/registry/config.yml
+              # The official kubectl image is distroless (no shell), so kubectl is the command itself.
+              # Pick the tag that matches the minor version of your cluster.
+              image: registry.k8s.io/kubectl:v1.36.2
+              command: ["kubectl"]
+              args:
+                - exec
+                - deployment/registry
+                - -n
+                - registry
+                - --
+                - registry
+                - garbage-collect
+                - --delete-untagged=true
+                - /etc/docker/registry/config.yml
